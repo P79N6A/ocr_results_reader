@@ -2,10 +2,10 @@ extern crate serde;
 extern crate serde_json;
 
 use std::io::prelude::*;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::fs::File;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -16,13 +16,37 @@ struct LineLabel{
     end_line: u64,
 }
 
+fn write_to_disk(ret: HashMap<String, HashMap<String, LineLabel>>){
+    println!("\nwrite to disk...");
+    let output = File::create("./data/index.json").unwrap();
+    let mut output = BufWriter::new(output);
+
+    write!(output, "{}", json!(ret).to_string()).unwrap();
+    
+    let output = File::create("./data/index.txt").unwrap();
+    let mut output = BufWriter::new(output);
+
+    write!(output," albumid      tvid       start line     end line\n").unwrap();
+    //            "222281201  1826344900    1000000000    1000000000"
+
+    let mut num_tvids: u64 = 0;
+    for (albumid, tvids) in ret.iter(){
+        println!("albumid: {}, number of tvids: {}", albumid, tvids.len());
+        num_tvids += tvids.len() as u64;
+        for (tvid, item) in tvids.iter(){
+            write!(output,"{}  {}    {:>10}    {:>10}\n", albumid, tvid, item.start_line, item.end_line).unwrap();
+        }
+    }
+    println!("total albumids: {}, total tvids: {}\n", ret.len(), num_tvids);
+}
+
 // #[derive(Serialize, Deserialize)]
 // struct Result{
 //     albumid: HashMap<String, HashMap<String, Line_label>>,
 // }
 
 fn main() {
-    let f = File::open("./data/tmp.txt").unwrap();
+    let f = File::open("./data/all_results.txt").unwrap();
     let f = BufReader::new(f);
 
     let mut ret: HashMap<String, HashMap<String, LineLabel>> = HashMap::new();
@@ -36,31 +60,34 @@ fn main() {
     dumy_tvid.insert("0".to_owned(), LineLabel{start_line: 0, end_line: 0});
     ret.insert("0".to_owned(), dumy_tvid);
 
-    let mut cnt = 0;
     let mut albumid = "0".to_owned();;
     let mut tvid = "0".to_owned();;
     for _line in f.lines() {
         i += 1;
+        if i % 10000000 == 0 {println!("lines: {}", i)}
         let line = _line.unwrap().trim().to_owned();
         if line.len() == 0 {continue}
         let mut lines = line.split_whitespace();
 
         albumid = lines.next().unwrap().to_owned();
         tvid = lines.next().unwrap().to_owned();
-
         match (&albumid, &tvid){
             (al_id, tv_id) if al_id != &prev_albumid => {
                 ret.get_mut(&prev_albumid).unwrap().get_mut(&prev_tvid).unwrap().end_line = i - 1;
-                let mut new_album_item: HashMap<String, LineLabel> = HashMap::new();
-                new_album_item.insert(tvid.clone(), LineLabel{start_line: i, end_line: 0});
-                ret.insert(albumid.clone(), new_album_item);
+                if !ret.contains_key(al_id){
+                    let mut new_album_item: HashMap<String, LineLabel> = HashMap::new();
+                    new_album_item.insert(tvid.clone(), LineLabel{start_line: i, end_line: 0});
+                    ret.insert(albumid.clone(), new_album_item);
+                }
                 prev_tvid = tv_id.clone();
-                prev_albumid = albumid.clone();
+                prev_albumid = al_id.clone();
             },
             (al_id, tv_id) if al_id == &prev_albumid && tv_id != &prev_tvid => {
                 ret.get_mut(al_id).unwrap().get_mut(&prev_tvid).unwrap().end_line = i - 1;
 
-                ret.get_mut(al_id).unwrap().insert(tv_id.clone(), LineLabel{start_line: i, end_line: 0});
+                if !ret[al_id].contains_key(tv_id){
+                    ret.get_mut(al_id).unwrap().insert(tv_id.clone(), LineLabel{start_line: i, end_line: 0});
+                }
         
                 prev_tvid = tv_id.clone();
             },
@@ -70,5 +97,7 @@ fn main() {
     ret.get_mut(&albumid).unwrap().get_mut(&tvid).unwrap().end_line = i - 1;
     ret.remove("0");
 
-    println!("{}", json!(ret));
+    write_to_disk(ret);
+    
+    println!("total lines: {}", i);
 }
