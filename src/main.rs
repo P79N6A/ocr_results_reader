@@ -1,103 +1,106 @@
 extern crate serde;
 extern crate serde_json;
+extern crate regex;
 
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
-use std::fs::File;
+use std::fs::{File, read_dir};
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value, Result};
+use regex::Regex;
 
-#[derive(Serialize, Deserialize)]
-struct LineLabel{
-    start_line: u64,
-    end_line: u64,
-}
+fn parse_item(item: &Value) -> (Vec<(i64, i64, i64, i64)>, Vec<String>){
+    let coords = &item[0];
+    let ocrs = &item[1];
+    if coords == &Value::Null {return (vec![], vec![]);}
 
-fn write_to_disk(ret: HashMap<String, HashMap<String, LineLabel>>){
-    println!("\nwrite to disk...");
-    let output = File::create("./data/index.json").unwrap();
-    let mut output = BufWriter::new(output);
+    let mut coords_vec: Vec<(i64, i64, i64, i64)> = Vec::new();
+    let mut ocrs_vec: Vec<String> = Vec::new(); 
+    let mut idx = 0;
+    while coords[idx] != Value::Null{
+        let coord = &coords[idx];
 
-    write!(output, "{}", json!(ret).to_string()).unwrap();
-    
-    let output = File::create("./data/index.txt").unwrap();
-    let mut output = BufWriter::new(output);
+        coords_vec.push((coord[0].as_i64().unwrap(), coord[1].as_i64().unwrap(), 
+                   coord[2].as_i64().unwrap(), coord[3].as_i64().unwrap()));
 
-    write!(output," albumid      tvid       start line     end line\n").unwrap();
-    //            "222281201  1826344900    1000000000    1000000000"
-
-    let mut num_tvids: u64 = 0;
-    for (albumid, tvids) in ret.iter(){
-        println!("albumid: {}, number of tvids: {}", albumid, tvids.len());
-        num_tvids += tvids.len() as u64;
-        for (tvid, item) in tvids.iter(){
-            write!(output,"{}  {}    {:>10}    {:>10}\n", albumid, tvid, item.start_line, item.end_line).unwrap();
-        }
+        ocrs_vec.push(ocrs[idx].as_str().unwrap().to_owned());
+        idx += 1;
     }
-    println!("total albumids: {}, total tvids: {}\n", ret.len(), num_tvids);
+
+    (coords_vec, ocrs_vec)
 }
 
-// #[derive(Serialize, Deserialize)]
-// struct Result{
-//     albumid: HashMap<String, HashMap<String, Line_label>>,
-// }
+fn get_json_files(dir_path: &str) -> Vec<String>{
+    let paths = read_dir(dir_path).unwrap();
+    let mut dir_vec: Vec<String> = Vec::new();
+
+    for entry in paths{
+        let path = entry.unwrap().path();
+        let path = path.as_path();
+        if path.is_dir() {continue}
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+
+        if &file_name[file_name.len()-5..] != ".text" {continue}
+
+        dir_vec.push(file_name.to_owned());
+    }
+    dir_vec.sort();
+    dir_vec
+}
+
+fn read_json(json_file_path: &str) -> Vec<(Vec<(i64, i64, i64, i64)>, Vec<String>)>{
+
+    let f = File::open(json_file_path).unwrap();
+    let mut f = BufReader::new(f);
+    let mut contents = String::new();
+
+    f.read_to_string(&mut contents).expect(&format!("can not read file to string: {}", json_file_path));
+    let json_ret: Value = serde_json::from_str(&contents).expect(&format!("can not parse file to json: {}", json_file_path));
+    
+    let mut ret:Vec<(Vec<(i64, i64, i64, i64)>, Vec<String>)> = Vec::new();
+    let mut idx = 0;
+
+    while json_ret[idx] != Value::Null{
+        let item = &json_ret[idx];
+        let (coord_vec, ocr_vec) = parse_item(item);
+        ret.push((coord_vec, ocr_vec));
+        idx += 1;
+    }
+    ret
+}
+
+
 
 fn main() {
-    let f = File::open("./data/all_results.txt").unwrap();
-    let f = BufReader::new(f);
+    let json_file_dir = "/data/yaosikai/online_results";
+    let json_files = get_json_files(json_file_dir);
 
-    let mut ret: HashMap<String, HashMap<String, LineLabel>> = HashMap::new();
+    let id_in_file_name = Regex::new(r"([0-9]+)_([0-9]+)_").unwrap();
 
-    let mut i:u64 = 0;
-    let mut prev_tvid = "0".to_owned();
-    let mut prev_albumid = "0".to_owned();
-
-    // dumy item for simplified logic
-    let mut dumy_tvid: HashMap<String, LineLabel> = HashMap::new();
-    dumy_tvid.insert("0".to_owned(), LineLabel{start_line: 0, end_line: 0});
-    ret.insert("0".to_owned(), dumy_tvid);
-
-    let mut albumid = "0".to_owned();;
-    let mut tvid = "0".to_owned();;
-    for _line in f.lines() {
-        i += 1;
-        if i % 10000000 == 0 {println!("lines: {}", i)}
-        let line = _line.unwrap().trim().to_owned();
-        if line.len() == 0 {continue}
-        let mut lines = line.split_whitespace();
-
-        albumid = lines.next().unwrap().to_owned();
-        tvid = lines.next().unwrap().to_owned();
-        match (&albumid, &tvid){
-            (al_id, tv_id) if al_id != &prev_albumid => {
-                ret.get_mut(&prev_albumid).unwrap().get_mut(&prev_tvid).unwrap().end_line = i - 1;
-                if !ret.contains_key(al_id){
-                    let mut new_album_item: HashMap<String, LineLabel> = HashMap::new();
-                    new_album_item.insert(tvid.clone(), LineLabel{start_line: i, end_line: 0});
-                    ret.insert(albumid.clone(), new_album_item);
-                }
-                prev_tvid = tv_id.clone();
-                prev_albumid = al_id.clone();
-            },
-            (al_id, tv_id) if al_id == &prev_albumid && tv_id != &prev_tvid => {
-                ret.get_mut(al_id).unwrap().get_mut(&prev_tvid).unwrap().end_line = i - 1;
-
-                if !ret[al_id].contains_key(tv_id){
-                    ret.get_mut(al_id).unwrap().insert(tv_id.clone(), LineLabel{start_line: i, end_line: 0});
-                }
-        
-                prev_tvid = tv_id.clone();
-            },
-            (_, _) => {},
-        }
-    }
-    ret.get_mut(&albumid).unwrap().get_mut(&tvid).unwrap().end_line = i - 1;
-    ret.remove("0");
-
-    write_to_disk(ret);
+    let mut albumid = "".to_owned();
+    let mut tvid = "".to_owned();
     
-    println!("total lines: {}", i);
+    let f = File::create("./online_result.txt").unwrap();
+    let mut f = BufWriter::new(f);
+
+    println!("number of json files: {}", json_files.len());
+    for (cnt, file_name) in json_files[4072..].iter().enumerate(){
+        println!("{}/{}", cnt, json_files.len());
+        match id_in_file_name.captures(&file_name){
+            Some(caps) => {
+                albumid = caps[1].to_owned();
+                tvid = caps[2].to_owned();
+            },
+            None => {continue},
+        }
+
+        let ret = read_json(&format!("{}/{}", json_file_dir, file_name));
+
+        // for (i, item) in ret.iter().enumerate(){
+        //     write!(f, "{}  {}  {:^8}    {:?}\n", albumid, tvid, i + 1, item.1);
+        // }
+    }
 }
